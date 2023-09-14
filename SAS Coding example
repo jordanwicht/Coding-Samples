@@ -1,42 +1,4 @@
-SAS Code Sample
 
-Jordan Wicht
-
-***All data including variable names have been simulated and/or altered for the purpose of this sample***
-
-Background
-We implement fraud risk models that score applications based on a variety of attributes. To measure the performance of those risk models to ensure they are good at predicting fraud, I validate them using an array of model performance metrics. This model in particular scores an application on a scale of 1-999, where higher scores indicate a higher probability that the application is using stolen or artificially created credentials. Since the model itself does not give a binary Fraud/Not fraud result, I aim to answer two things:
-
-1) Is the model good at identifying which applications are fraudulent?
-2) What is the optimal threshold (score) at which we decline applications?
-
-The following code takes the input dataset, where each row corresponds to a single application, processes it, and computes a variety of metrics at different score thresholds. Graphs are produced to aid in the changes in performance as the score threshold changes. 
-
-
-
-Description of Input dataset.
-VariableName		Format		Description
-App_id			$char8.		Unique Application ID
-App_date		date9.		Date application was submitted
-Product			$char8.		Product type. Thresholds vary by product.
-ModelScore		best3.		1-999. Higher values indicate application is likely fraudulent
-Restraint		best1.		0 or 1. 1 indicates if an account from an approved application had subsequently been locked due to fraudulent activity
-Decision_reason1	$char25.	Decision code indicating whether application was approved or not, or needs further review. There are multiple decision code fields because applications 					may go through several stages before a final decision is made.
-Decision_reason2	$char25.
-Decision_reason3	$char25.	
-Decision_reason4	$char25.
-Decision_reason5	$char25.	
-Decision_reason6	$char25.	
-Decision_reason7	$char25.
-Decision_reason8	$char25.
-Decision_reason9	$char25.	
-Decision_reason10	$char25.					
-
-
-
-
-
-/*Begin Code*/
 
 
 
