@@ -1,0 +1,276 @@
+SAS Code Sample
+
+Jordan Wicht
+
+***All data including variable names have been simulated and/or altered for the purpose of this sample***
+
+Background
+We implement fraud risk models that score applications based on a variety of attributes. To measure the performance of those risk models to ensure they are good at predicting fraud, I validate them using an array of model performance metrics. This model in particular scores an application on a scale of 1-999, where higher scores indicate a higher probability that the application is using stolen or artificially created credentials. Since the model itself does not give a binary Fraud/Not fraud result, I aim to answer two things:
+
+1) Is the model good at identifying which applications are fraudulent?
+2) What is the optimal threshold (score) at which we decline applications?
+
+The following code takes the input dataset, where each row corresponds to a single application, processes it, and computes a variety of metrics at different score thresholds. Graphs are produced to aid in the changes in performance as the score threshold changes. 
+
+
+
+Description of Input dataset.
+VariableName		Format		Description
+App_id			$char8.		Unique Application ID
+App_date		date9.		Date application was submitted
+Product			$char8.		Product type. Thresholds vary by product.
+ModelScore		best3.		1-999. Higher values indicate application is likely fraudulent
+Restraint		best1.		0 or 1. 1 indicates if an account from an approved application had subsequently been locked due to fraudulent activity
+Decision_reason1	$char25.	Decision code indicating whether application was approved or not, or needs further review. There are multiple decision code fields because applications 					may go through several stages before a final decision is made.
+Decision_reason2	$char25.
+Decision_reason3	$char25.	
+Decision_reason4	$char25.
+Decision_reason5	$char25.	
+Decision_reason6	$char25.	
+Decision_reason7	$char25.
+Decision_reason8	$char25.
+Decision_reason9	$char25.	
+Decision_reason10	$char25.					
+
+
+
+
+
+/*Begin Code*/
+
+
+
+
+%macro loop,
+Proc sql;
+Create table one as 
+Select 
+App_id, App_date, Product, ModelScore, Restraint
+%do i = 1 %to 10;
+,case when decision_reason&i. in (“CODEW” “CODEX” “CODEY” “CODEZ”) then 1 else 0 end as fraud_&i.
+%end;
+From inputdata
+;
+%mend loop;
+
+%loop
+
+Proc sql;
+Create table two as 
+Select 
+App_id, App_date, ModelScore
+,max(fraud_1,fraud_2,fraud_3,fraud_4,fraud_5,fraud_6,fraud_7,fraud_8,fraud_9,fraud_10, restraint) as fraud_rsn, product
+From one;
+
+%macro sample(df,score);
+Proc sql;
+Create table Input as
+Select * from &df.
+Where &score. between &mincs. and &maxcs.;
+select round(count(*) * &n.) into : n_
+from input;
+%do seed = 1 %to &samples.;
+proc surveyselect data=Input noprint
+	out=_sample_&seed.
+	method=srs
+	samplesize=&n_.
+	seed=&seed.;
+%end;
+%mend;
+
+%macro performets(group,score,target);
+%local seed cs;
+%do seed = 1 %to &samples.;
+%do cs=&mincs. %to &maxcs.;
+proc sql;
+create table mets_&group._&cs. as
+select 	 &cs. as threshold, sum(&target.) as total_fraud, count(*) - sum(&target.) as total_good
+        ,sum(case when &score. > &cs. then 1 else 0 end) as TotalGT
+	,sum(case when &score. > &cs. then &target. else 0 end) as TruePos
+	,calculated TotalGT - calculated TruePos as FalsePos
+        ,sum(case when &score. <= &cs. then 1 else 0 end) as TotalLE
+	,sum(case when &score. <= &cs. then &target. else 0 end) as FalseNeg
+	,calculated TotalLE - calculated FalseNeg as TrueNeg
+	,calculated TruePos / (calculated TruePos + calculated FalsePos) as Precision
+	,calculated TruePos / (calculated TruePos + calculated FalseNeg) as Recall
+	,2 * ((calculated Precision * calculated Recall) / (calculated Precision + calculated Recall)) as F1
+	,-1 * ((calculated FalsePos / calculated TotalGT) * log((calculated FalsePos / calculated TotalGT)) + (calculated TruePos / calculated TotalGT) * log((calculated TruePos / calculated TotalGT))) as EntropyGT
+	,-1 * ((calculated TruePos / calculated TotalLE) * log((calculated TruePos / calculated TotalLE)) + (calculated FalseNeg / calculated TotalLE) * log((calculated FalseNeg / calculated TotalLE))) as EntropyLE
+	,sum(calculated EntropyGT, calculated EntropyLE)/2 as Entropy
+	,1 - (calculated FalsePos / calculated TotalGT)**2 - (calculated TruePos / calculated TotalGT)**2 as GiniGT
+	,1 - (calculated TrueNeg / calculated TotalLE)**2 - (calculated FalseNeg / calculated TotalLE)**2 as GiniLE
+	,sum(calculated GiniGT, calculated GiniLE)/2 as Gini
+	,((calculated TruePos * calculated TrueNeg) - (calculated FalsePos * calculated FalseNeg)) /
+	 sqrt((calculated TruePos + calculated FalsePos) * (calculated FalseNeg + calculated TrueNeg) * (calculated TruePos + calculated FalseNeg) * (calculated TrueNeg + calculated FalsePos)) as Phi
+
+from _sample&seed.
+where lob = "&group.";
+%end;
+
+data &group.&score._mets_&seed.;
+set mets_:;
+
+proc datasets library=work nolist;
+delete mets_:;
+
+proc sort data=&group.&score._mets_&seed.;
+by threshold;
+
+%end;
+
+data fin_mets_&group.;
+set &group.&score._mets_:;
+
+proc sql;
+create table avg_mets_&group. as
+select threshold, avg(Entropy) as Entropy, avg(precision) as Precision, avg(recall) as Recall, avg(F1) as F1, avg(Gini) as Gini, avg(phi) as Phi
+from fin_mets_&group.
+group by threshold;
+
+%mend;
+
+%let samples = 5;
+%let n = .1;
+%let mincs = 0;
+%let maxcs = 1000;
+
+%sample(two,modelscore)
+
+%performets(PRODUCT_A,FraudScore,Target)
+%performets(PRODUCT_B,FraudScore,Target)
+%performets(PRODUCT_C,FraudScore,Target)
+
+
+
+
+/****************/
+
+
+data null;
+do Threshold=&mincs. to &maxcs. by 1;
+output;
+end;
+run;
+
+%macro fgplot(lob,ymax,df,score,target,metric);
+proc sql;
+create table a as 
+select &score., sum(&target.) as Fraud, count(*) - calculated Fraud as Good
+from (select * from input where lob = "&lob.")
+group by &score.;
+
+create table b as 
+select   b.threshold as &score.
+	,ceil(b.threshold / &binsize.) * &binsize. as Bin
+	,0 as Floor
+	,case when Fraud = . then 0 else Fraud end as Fraud
+	,case when Good = . then 0 else Good end as Good
+	,calculated good + calculated fraud as total
+	,Entropy, Precision, Recall, F1, Gini, Phi
+from a
+right join null b
+on a.&score. = b.threshold
+left join avg_mets_&lob. c
+on c.threshold = b.threshold;
+
+select &score., &metric. into : &min., : min_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric.;
+select &score., &metric. into : &max., : max_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric. desc;
+
+create table c as
+select Bin, sum(fraud) as fraud, sum(good) as good, sum(total) as total
+from b 
+group by bin;
+
+create table d as 
+select Floor, Entropy, Precision, Recall, F1, Gini, Phi, b.*
+from b
+left join c
+on a.Bin = b.Bin
+order by &score.;
+
+title "&lob.: Performance Metrics by &score."
+proc sgplot data d;
+band x=bin lower=good upper=total / legendlabel="Fraud" name="Total" fillattrs=(color=cxdc143c) transparency=0.4;
+band x=bin lower=floor upper=good / legendlabel="Good Apps" name="Good" fillattrs=(color=cx4dcfb0) transparency=0.7;
+
+%if &metric.=F1 %then %do;
+refline %sysfunc(scan(&max.,1)) / axis=x lineattrs=(thickness=1 color=cxa0a0a0 pattern=solid) label="Max &metric.:%sysfunc(scan(&max.,1))" labelattrs=(weight=bold);
+series x=&score. y=&metric. / y2axis x2axis lineattrs=(thickness=3 color=cx0515a0 pattern=solid);
+series x=&score. y=Precision / y2axis x2axis lineattrs=(thickness=3 color=cx1019ba pattern=longdash) transparency=0.7;
+series x=&score. y=Recall / y2axis x2axis lineattrs=(thickness=3 color=cx1019ba pattern=shortdash) transparency=0.7;
+%end;
+
+%if &metric.=Phi %then %do;
+refline %sysfunc(scan(&max.,1)) / axis=x lineattrs=(thickness=1 color=cxa0a0a0 pattern=solid) label="Max &metric.:%sysfunc(scan(&max.,1))" labelattrs=(weight=bold);
+series x=&score. y=&metric. / y2axis x2axis lineattrs=(thickness=3 color=cx0515a0 pattern=solid);
+%end;
+
+%if &metric.=Entropy or &metric.=Gini %then %do;
+refline %sysfunc(scan(&max.,1)) / axis=x lineattrs=(thickness=1 color=cxa0a0a0 pattern=solid) label="Min &metric.:%sysfunc(scan(&min.,1))" labelattrs=(weight=bold);
+series x=&score. y=&metric. / y2axis x2axis lineattrs=(thickness=3 color=cx0515a0 pattern=solid);
+%end;
+
+xaxis values=(&mincs. to &maxcs. by %eval(&maxcs. / 50)) fitpolicy=rotate;
+yaxis values=(0 to &maxcs. by %eval(&maxcs. / 10)) grid;
+x2axis display=none; y2axis values(0 to 1 by 0.1);
+
+proc sql;
+create table group_&lob. as
+select &score., fraud / total as percent "% Fraud" format percent8.2, "Fraud" as Group
+from d
+group by &score.
+union
+select &score., good / total as percent "% Fraud" format percent8.2, "Good" as Group
+from d
+group by &score.;
+
+title "&lob. Fraud Distribution Detail";
+proc sgplot data=group_&lob. (where=(&score. >= 500));
+styleattrs datacolors=(cxdc143c cx4dbfbc);
+vbar &score. / response=percent group=group transparency=0.4 seglabel;
+refline .8 / axis=y lineattrs=(thickness=2 color=cx0515a0 pattern=solid);
+refline .7 / axis=y lineattrs=(thickness=2 color=cx0515a0 pattern=longdash);
+refline .6 / axis=y lineattrs=(thickness=2 color=cx0515a0 pattern=shortdash);
+xaxis values=(0 to 1 by .1) label="Number of Applications";
+
+%mend;
+
+%let binsize = 10;
+%let w = 20;
+
+ods graphics on / width=12in height=8in;
+%fgplot(CC,10000,final,new_theft,id_fraud,F1);
+
+%macro KS(df,score,target,group);
+proc npar1way data=&df. (where=(lob="&group.")) edf;
+class &target.;
+var &score.;
+ods output EEDFPlot = DFplot_&group.;
+ods output KSTest = KSTest_&group.;
+ods output KS2Stats = KS2Stats_&group.;
+
+proc sql noprint;
+select valueatmaximum into : ks_max from kstest_&group. where class = "Total";
+select left(catx(" ","D:,put(nvalue2,percent8.2))) into : D from KS2Stats_&group. where label2 = "D";
+select left(catx(" ","&D.,"(p",cvalue2,")")) into : Dp from KS2Stats_&group. where name2 = "P_KSA";
+
+proc sql;
+create table edf_input_&group. as
+select   _x, 0 as floor
+	,sum(case when _class = '0' then _edf else . end) as _0 "Good" format percent8.2
+	,sum(case when _class = '1' then _edf else . end) as _1 "Fraud" format percent8.2	
+from EDFPlot_&group.
+group by _x;
+
+title "&group.: K-S Test for 2 Distributions";
+ods graphics on / width=9in height=6in;
+proc sgplot data=edf_input_&group.;
+band x=_x lower=floor upper=_0 / fillattrs=(color=cx4dcfb0) transparency=0.7;
+band x=_x lower=floor upper=_1 / fillattrs=(color=cxdc143c) transparency=0.7;
+refline &ks_max. / axis=x lineattrs=(thickness=2 color=cx404040 pattern=shortdash) label="Score at D: &ks_max.|| &Dp." labelattrs=(weight=bold);
+series x=_x y=_0 / smoothconnect lineattrs=(thickness=2 color=cx4dcfb0 pattern=solid);
+series x=_x y=_1 / smoothconnect lineattrs=(thickness=2 color=cxdc143c pattern=solid);
+yaxis grid label="EDF"; xaxis label="Score" values=(0 to 1000 by 100);
+%mend;
+
+%KS(final,new_theft,id_fraud,CC);
