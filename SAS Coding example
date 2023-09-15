@@ -1,25 +1,4 @@
 
-%macro loop,
-Proc sql;
-Create table one as 
-Select 
-App_id, App_date, Product, ModelScore, Restraint
-%do i = 1 %to 10;
-,case when decision_reason&i. in (“CODEW” “CODEX” “CODEY” “CODEZ”) then 1 else 0 end as fraud_&i.
-%end;
-From inputdata
-;
-%mend loop;
-
-%loop
-
-Proc sql;
-Create table two as 
-Select 
-App_id, App_date, ModelScore
-,max(fraud_1,fraud_2,fraud_3,fraud_4,fraud_5,fraud_6,fraud_7,fraud_8,fraud_9,fraud_10, restraint) as fraud_rsn, product
-From one;
-
 %macro sample(df,score);
 Proc sql;
 Create table Input as
@@ -28,7 +7,7 @@ Where &score. between &mincs. and &maxcs.;
 select round(count(*) * &n.) into : n_
 from input;
 %do seed = 1 %to &samples.;
-proc surveyselect data=Input noprint
+proc surveyselect data=input noprint
 	out=_sample_&seed.
 	method=srs
 	samplesize=&n_.
@@ -61,7 +40,7 @@ select 	 &cs. as threshold, sum(&target.) as total_fraud, count(*) - sum(&target
 	,((calculated TruePos * calculated TrueNeg) - (calculated FalsePos * calculated FalseNeg)) /
 	 sqrt((calculated TruePos + calculated FalsePos) * (calculated FalseNeg + calculated TrueNeg) * (calculated TruePos + calculated FalseNeg) * (calculated TrueNeg + calculated FalsePos)) as Phi
 
-from _sample&seed.
+from _sample_&seed.
 where lob = "&group.";
 %end;
 
@@ -92,7 +71,7 @@ group by threshold;
 %let mincs = 0;
 %let maxcs = 1000;
 
-%sample(two,modelscore)
+%sample(df,modelscore)
 
 %performets(PRODUCT_A,FraudScore,Target)
 %performets(PRODUCT_B,FraudScore,Target)
@@ -131,6 +110,7 @@ on a.&score. = b.threshold
 left join avg_mets_&lob. c
 on c.threshold = b.threshold;
 
+proc sql noprint;
 select &score., &metric. into : &min., : min_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric.;
 select &score., &metric. into : &max., : max_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric. desc;
 
@@ -140,14 +120,14 @@ from b
 group by bin;
 
 create table d as 
-select Floor, Entropy, Precision, Recall, F1, Gini, Phi, b.*
+select &score., Floor, Entropy, Precision, Recall, F1, Gini, Phi, b.*
 from b
 left join c
 on a.Bin = b.Bin
 order by &score.;
 
-title "&lob.: Performance Metrics by &score."
-proc sgplot data d;
+title "&lob.: Performance Metrics by &score.";
+proc sgplot data=d;
 band x=bin lower=good upper=total / legendlabel="Fraud" name="Total" fillattrs=(color=cxdc143c) transparency=0.4;
 band x=bin lower=floor upper=good / legendlabel="Good Apps" name="Good" fillattrs=(color=cx4dcfb0) transparency=0.7;
 
@@ -169,8 +149,8 @@ series x=&score. y=&metric. / y2axis x2axis lineattrs=(thickness=3 color=cx0515a
 %end;
 
 xaxis values=(&mincs. to &maxcs. by %eval(&maxcs. / 50)) fitpolicy=rotate;
-yaxis values=(0 to &maxcs. by %eval(&maxcs. / 10)) grid;
-x2axis display=none; y2axis values(0 to 1 by 0.1);
+yaxis values=(0 to &ymax. by %eval(&ymax. / 10)) grid;
+x2axis display=none; y2axis values=(0 to 1 by 0.1);
 
 proc sql;
 create table group_&lob. as
@@ -209,8 +189,8 @@ ods output KS2Stats = KS2Stats_&group.;
 
 proc sql noprint;
 select valueatmaximum into : ks_max from kstest_&group. where class = "Total";
-select left(catx(" ","D:,put(nvalue2,percent8.2))) into : D from KS2Stats_&group. where label2 = "D";
-select left(catx(" ","&D.,"(p",cvalue2,")")) into : Dp from KS2Stats_&group. where name2 = "P_KSA";
+select left(catx(" ","D:",put(nvalue2,percent8.2))) into : D from KS2Stats_&group. where label2 = "D";
+select left(catx(" ","&D."lo,"(p",cvalue2,")")) into : Dp from KS2Stats_&group. where name2 = "P_KSA";
 
 proc sql;
 create table edf_input_&group. as
