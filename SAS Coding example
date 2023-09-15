@@ -1,4 +1,6 @@
-
+  /*********************************************************/
+ /*Step 1: Create &samples samples of &n size from dataset*/
+/*********************************************************/
 %macro sample(df,score);
 Proc sql;
 Create table Input as
@@ -15,10 +17,18 @@ proc surveyselect data=input noprint
 %end;
 %mend;
 
+  /****************************************************************************************************************/
+ /*Step 2: Calculate a variety of performance metrics for binary classification based on model probability scores*/
+/****************************************************************************************************************/
+
+/*group: Nominal value representing a subgroup if needed*/
+/*score: interval-ratio model score*/
+/*target: binary (0=negative 1=positive)*/
+
 %macro performets(group,score,target);
 %local seed cs;
-%do seed = 1 %to &samples.;
-%do cs=&mincs. %to &maxcs.;
+%do seed = 1 %to &samples.; 
+%do cs=&mincs. %to &maxcs.; /*Calculate metrics at every threshold, for each sample*/
 proc sql;
 create table mets_&group._&cs. as
 select 	 &cs. as threshold, sum(&target.) as total_fraud, count(*) - sum(&target.) as total_good
@@ -43,10 +53,10 @@ select 	 &cs. as threshold, sum(&target.) as total_fraud, count(*) - sum(&target
 from _sample_&seed.
 where lob = "&group.";
 %end;
-
-data &group.&score._mets_&seed.;
+/*concatenate all tables from the same sample together*/
+data &group.&score._mets_&seed.; 
 set mets_:;
-
+/*delete excess files so SAS doesn't freeze*/
 proc datasets library=work nolist;
 delete mets_:;
 
@@ -54,10 +64,10 @@ proc sort data=&group.&score._mets_&seed.;
 by threshold;
 
 %end;
-
+/*Concatenate all samples together*/
 data fin_mets_&group.;
 set &group.&score._mets_:;
-
+/*Create one dataset computing average performance metric from each sample*/
 proc sql;
 create table avg_mets_&group. as
 select threshold, avg(Entropy) as Entropy, avg(precision) as Precision, avg(recall) as Recall, avg(F1) as F1, avg(Gini) as Gini, avg(phi) as Phi
@@ -73,15 +83,13 @@ group by threshold;
 
 %sample(df,modelscore)
 
-%performets(PRODUCT_A,FraudScore,Target)
-%performets(PRODUCT_B,FraudScore,Target)
-%performets(PRODUCT_C,FraudScore,Target)
+%performets(group1,modelscore,Target)
+%performets(group2,modelscore,Target)
+%performets(group3,modelscore,Target)
 
-
-
-
-/****************/
-
+  /***************************/
+ /*Step 3: Visualize results*/
+/***************************/
 
 data null;
 do Threshold=&mincs. to &maxcs. by 1;
