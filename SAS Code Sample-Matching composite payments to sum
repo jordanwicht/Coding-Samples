@@ -1,0 +1,19 @@
+/*Background
+There is a list of accounts with negative balances. However, the transactions that comprise those balances are not known.
+There also exists a dataset with all transactions for every account. For this project, I create a program to match the composite transactions 
+that make up the total negative balance for a given account. Some additional details:
+
+-There are two datasets: 
+    1. An account-level dataset (acct_bal) with the outstanding balance for that account, and
+    2. A transaction-level dataset (acct_trx) containing the specifics of transactions for all accounts
+-The acct_trx dataset contains other accounts than just the ones in acct_bal.
+-There are more transactions for each account than those that make up the outstanding balance.
+    E.g. An account has an outstanding balance of $1000 on acct_bal, but has 7 transactions totaling $1450 on acct_trx.
+-The composite transactions may not necessarily equal the outstanding balance; some transactions maybe be missing from acct_trx, an error may have been 
+made when calculating the outstanding balance (the data may have been manually entered), etc.
+-Outstanding balances could be the result of events made of debits or credits, i.e. both directions must be considered, although a balance
+comprised of both is unlikely
+*/
+
+proc sql;
+create table xcs as select acct_nbr, ext_aba, ext_acct, a.acct_num, ach_date
