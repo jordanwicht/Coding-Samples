@@ -1,6 +1,12 @@
   /*********************************************************/
  /*Step 1: Create &samples samples of &n size from dataset*/
 /*********************************************************/
+
+%let samples = 5;	/*Number of samples*/
+%let n = .1;		/*sample size*/
+%let mincs = 0;		/*min score to consider for threshold*/
+%let maxcs = 1000;	/*max score to consider for threshold*/
+
 %macro sample(df,score);
 Proc sql;
 Create table Input as
@@ -16,6 +22,8 @@ proc surveyselect data=input noprint
 	seed=&seed.;
 %end;
 %mend;
+
+%sample(df,score)
 
   /****************************************************************************************************************/
  /*Step 2: Calculate a variety of performance metrics for binary classification based on model probability scores*/
@@ -76,16 +84,9 @@ group by threshold;
 
 %mend;
 
-%let samples = 5;
-%let n = .1;
-%let mincs = 0;
-%let maxcs = 1000;
-
-%sample(df,modelscore)
-
-%performets(group1,modelscore,Target)
-%performets(group2,modelscore,Target)
-%performets(group3,modelscore,Target)
+%performets(group1,score,Target)
+%performets(group2,score,Target)
+%performets(group3,score,Target)
 
   /***************************/
  /*Step 3: Visualize results*/
@@ -118,6 +119,7 @@ on a.&score. = b.threshold
 left join avg_mets_&lob. c
 on c.threshold = b.threshold;
 
+/*store extereme values for specified metric. Min values are for impurity metrics, max are for F1 and Phi*/
 proc sql noprint;
 select &score., &metric. into : &min., : min_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric.;
 select &score., &metric. into : &max., : max_score from b where &score. < &maxcs. - &w. and &score. > &w. order by &metric. desc;
@@ -128,10 +130,10 @@ from b
 group by bin;
 
 create table d as 
-select &score., Floor, Entropy, Precision, Recall, F1, Gini, Phi, b.*
-from b
-left join c
-on a.Bin = b.Bin
+select &score., Floor, Entropy, Precision, Recall, F1, Gini, Phi, c.*
+from b b
+left join c c
+on b.Bin = c.Bin
 order by &score.;
 
 title "&lob.: Performance Metrics by &score.";
@@ -171,7 +173,7 @@ from d
 group by &score.;
 
 title "&lob. Fraud Distribution Detail";
-proc sgplot data=group_&lob. (where=(&score. >= 500));
+proc sgplot data=group_&lob. (where=(&score. >= %eval(&maxcs./2));
 styleattrs datacolors=(cxdc143c cx4dbfbc);
 vbar &score. / response=percent group=group transparency=0.4 seglabel;
 refline .8 / axis=y lineattrs=(thickness=2 color=cx0515a0 pattern=solid);
@@ -185,7 +187,7 @@ xaxis values=(0 to 1 by .1) label="Number of Applications";
 %let w = 20;
 
 ods graphics on / width=12in height=8in;
-%fgplot(CC,10000,final,new_theft,id_fraud,F1);
+%fgplot(Product,10000,df,score,target,F1);
 
 %macro KS(df,score,target,group);
 proc npar1way data=&df. (where=(lob="&group.")) edf;
