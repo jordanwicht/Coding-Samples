@@ -30,6 +30,9 @@ on a.acct_num = b.acct_num and abs(intck('day',ach_date, date_of_loss)) <= 45 an
 order by acct_num, ach_amt;
 run;
 
+  /******************************************************************************************************************************/
+ /*Step 2: Store list of accounts, outstanding balances, and total amount and number of candidate transactions for each account*/
+/******************************************************************************************************************************/
 proc sql;
 create table ach_co_ as
 select a.*, b.ach_count, c.ach_sum
@@ -59,10 +62,6 @@ from ach_co
 group by Acct_Num
 order by calculated count desc;
 
-
-﻿
-
-
 proc sql noprint;
 select round(max(item_amt),1), round (max(loss_to_pfcu),1) into : gross separated by " ", :netam separated by " "
 from ach_co;
@@ -90,11 +89,10 @@ order by calculated sort desc;
 %macro Composite(name, target, accts, df, op);
 %local myvariable i comb calc_loss size vars;
 %do i=1 %to %sysfunc(countw(&accts));
-%let myvariable =%scan (&accts, &i);
-%let calc_loss = %scan(&target,&i);
-%let size %scan(&n,&i);
-%let vars = %sysfunc(compress(&keep6.,'"'));
-
+    %let myvariable =%scan (&accts, &i);
+    %let calc_loss = %scan(&target,&i);
+    %let size = %scan(&n,&i);
+    %let vars = %sysfunc(compress(&keep6.,'"'));
 data &myvariable;
 array ach00 (1000) 8 _temporary_;
 do _N_= 1 to &size.;
@@ -104,7 +102,44 @@ ach00(_N_) = dc_amt;
 end;
 array ach 8 ach1 - &max.;
 %if &size. &op. 20 and &calc_loss. ne %then %do comb = 1 %to &size.; /* Large sizes (>cbmax) must be run separately from smaller sizes or else SAS will take forever*/
-call missing (of ach1 ach&comb.);
+call missing(of ach1 - ach&comb.);
 ncomb = comb(&size., &comb.);
 do i = 1 to ncomb;
+rc = lexcombi(&size., &comb., of ach1 - ach&comb.);
+sum= 0;
+do _N_ = 1 to &comb.;
+sum + ach00 (ach(_N_));
+cl = &calc_loss.;
+absum = abs(sum);
+dif= abs(cl - absum);
+if substr("&name.",1,3) = "grs" then rank = 0; 
+else if substr("&name.",1,3) = "net" then rank = 1;
+end;
 
+/*Criteria to be considered a potential matching combination to outstanding balance or for abandoning early*/
+if &size. > 20 and &comb. > &cbmax. then leave; /* For Large numbers of candidate ACHS (>cbmax), if the combination is larger then cbmax, then leave*/
+if ach_sum < ((1-&range.) * cl) then leave; /*if the sum of all candidate ACHS doesn't add up to the minimum range of the fraud event amount, then there is no reason to continue*/
+if abs(absum - cl) <= (&range. * cl) then output; /*if the comb sum is within the specified range of the calculated loss, keep*/
+if abs(absum - cl) < 1 then leave; /* if the comb sum is perfect, then there is no reason to continue*/
+if absum > ((&range. * cl) + cl) then leave; /* not sure if this one is needed*/
+if &size. > 20 and absum - cl > (&range. * &calc_loss.) then leave; /*For Large numbers of candidate ACHS (>cbmax), leave if out of range */
+end;
+%end;
+%end;
+
+/*Concatenate all files created in the do loop*/
+data &name._&op.;
+set PF_;;
+
+/*Delete excess files that were concatenated*/
+proc datasets library=work nolist;
+delete PF_:;
+run;
+%mend Composite;
+
+%Composite(grs_ach, &gross, &PF_list, ach_co,le);
+%Composite(net_ach, &netam, &PF_list, ach_co,le);
+
+/*Accounts where &size > &cbmax are run separately*/
+%Composite(grs_ach, &gross, &PF_List, ach_co, gt);
+%Composite (net_ach, &netam, &PF_List, ach_co, gt);
