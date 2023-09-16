@@ -15,5 +15,96 @@ made when calculating the outstanding balance (the data may have been manually e
 comprised of both is unlikely
 */
 
+  /*****************************************/
+ /*Step 1: Join the datasets on account ID*/
+/*****************************************/
+
 proc sql;
-create table xcs as select acct_nbr, ext_aba, ext_acct, a.acct_num, ach_date
+create table xcs as select
+acct_nbr, external_aba, external_acct, a.acct_num, ach_date, sign, ach_amt, ach_amt * sign as dc_amt, abs(ach_date - date_of_loss) as date_dif
+, FI, trans_code, sequence ,date_of_loss, Party, origin_type, channel_out_type, co_date, loss_to_PFCU
+,case when item_amt = . then 0 else item_amt end as item_amt format dollar16.2
+from chargeoffs a
+inner join ACH b
+on a.acct_num = b.acct_num and abs(intck('day',ach_date, date_of_loss)) <= 45 and Loss_Descr_Type like "ACH%"
+order by acct_num, ach_amt;
+run;
+
+proc sql;
+create table ach_co_ as
+select a.*, b.ach_count, c.ach_sum
+from xcs a
+left join
+(select count(*) as ach_count, acct_num from xcs
+group by Acct_Num) b
+on a.acct_num = b.acct_num
+left join
+(select sum(ach_amt) as ach_sum, acct_num from xcs
+group by Acct_Num) c
+on a.acct_num= c.acct_num
+order by acct_num, ach_amt;
+
+data ach_co;
+set ach_co_;
+by acct_num ach_amt;
+retain num;
+if first.acct_num then num = 1;
+else num = sum(num, 1);
+run;
+
+proc sql;
+create table maxn_acct as
+select count(*) as count, acct_num
+from ach_co
+group by Acct_Num
+order by calculated count desc;
+
+
+﻿
+
+
+proc sql noprint;
+select round(max(item_amt),1), round (max(loss_to_pfcu),1) into : gross separated by " ", :netam separated by " "
+from ach_co;
+
+select cat("PF_", Acct_Num) into : PF_list separated by " "
+from (select distinct Acct_Num from ach_co);
+
+select count(*) into : n separated by " "
+from ach_co
+group by Acct_Num;
+
+select cat("ach", count(*)) as count, count(*) as sort into : max, : temp
+14 from ach_co
+15 group by Acct_Num
+order by calculated sort desc;
+
+/*For n number of composite transactions, there are 2^n - 1 possible combinations. Therefore, for larger
+  values of n (e.g., > 20, or > 1,048,575 combinations), we need to limit the search space so SAS doesn't take forever.
+  Additionally, I run the list of accounts that have larger potential transactions separately for better computational performance.*/
+
+%let range = .1; /*Specifies what percentage range of calc_loss composite ACHS can be within to be considered part of fraud event */
+%let cbmax = 20; /* Maximum number of composite transactions that will be considered*/
+%let keep6 = "Acct_Num External_ABA External_Acct dc_amt date_of_loss ach_sum";
+
+%macro Composite(name, target, accts, df, op);
+%local myvariable i comb calc_loss size vars;
+%do i=1 %to %sysfunc(countw(&accts));
+%let myvariable =%scan (&accts, &i);
+%let calc_loss = %scan(&target,&i);
+%let size %scan(&n,&i);
+%let vars = %sysfunc(compress(&keep6.,'"'));
+
+data &myvariable;
+array ach00 (1000) 8 _temporary_;
+do _N_= 1 to &size.;
+set &df. (keep = &vars);
+where acct_num = substr("&myvariable", 4, length("&myvariable")-3);
+ach00(_N_) = dc_amt;
+end;
+array ach 8 ach1 - &max.;
+%if &size. &op. 20 and &calc_loss. ne %then %do comb = 1 %to &size.; /* Large sizes (>cbmax) must be run separately from smaller sizes or else SAS will take forever*/
+call missing (of ach1 ach&comb.);
+ncomb = comb(&size., &comb.);
+do i = 1 to ncomb;
+
