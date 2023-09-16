@@ -221,4 +221,4 @@ series x=_x y=_1 / smoothconnect lineattrs=(thickness=2 color=cxdc143c pattern=s
 yaxis grid label="EDF"; xaxis label="Score" values=(0 to 1000 by 100);
 %mend;
 
-%KS(two,score,target,CC);
+%KS(df,score,target,group);
