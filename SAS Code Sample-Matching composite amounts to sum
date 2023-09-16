@@ -13,6 +13,9 @@ that make up the total negative balance for a given account. Some additional det
 made when calculating the outstanding balance (the data may have been manually entered), etc.
 -Outstanding balances could be the result of events made of debits or credits, i.e. both directions must be considered, although a balance
 comprised of both is unlikely
+
+The following code joins the datasets together, then finds all possible combinations of transactions for each accoount and retrieves the closest difference
+between the sum of transactions and the outstanding balance.
 */
 
   /*****************************************/
@@ -30,9 +33,6 @@ on a.acct_num = b.acct_num and abs(intck('day',ach_date, date_of_loss)) <= 45 an
 order by acct_num, ach_amt;
 run;
 
-  /******************************************************************************************************************************/
- /*Step 2: Store list of accounts, outstanding balances, and total amount and number of candidate transactions for each account*/
-/******************************************************************************************************************************/
 proc sql;
 create table ach_co_ as
 select a.*, b.ach_count, c.ach_sum
@@ -55,12 +55,21 @@ if first.acct_num then num = 1;
 else num = sum(num, 1);
 run;
 
+/*For n number of composite transactions, there are 2^n - 1 possible combinations. Therefore, for larger
+  values of n (e.g., > 20, or > 1,048,575 combinations), we need to limit the search space so SAS doesn't take forever.
+  Additionally, I run the list of accounts that have larger potential transactions separately for better computational performance.*/
+
+/*List of accounts in descending order of number of candidate transactions*/
 proc sql;
 create table maxn_acct as
 select count(*) as count, acct_num
 from ach_co
 group by Acct_Num
 order by calculated count desc;
+
+  /******************************************************************************************************************************/
+ /*Step 2: Store list of accounts, outstanding balances, and total amount and number of candidate transactions for each account*/
+/******************************************************************************************************************************/
 
 proc sql noprint;
 select round(max(item_amt),1), round (max(loss_to_pfcu),1) into : gross separated by " ", :netam separated by " "
@@ -74,36 +83,32 @@ from ach_co
 group by Acct_Num;
 
 select cat("ach", count(*)) as count, count(*) as sort into : max, : temp
-14 from ach_co
-15 group by Acct_Num
+from ach_co
+group by Acct_Num
 order by calculated sort desc;
-
-/*For n number of composite transactions, there are 2^n - 1 possible combinations. Therefore, for larger
-  values of n (e.g., > 20, or > 1,048,575 combinations), we need to limit the search space so SAS doesn't take forever.
-  Additionally, I run the list of accounts that have larger potential transactions separately for better computational performance.*/
-
-%let range = .1; /*Specifies what percentage range of calc_loss composite ACHS can be within to be considered part of fraud event */
-%let cbmax = 20; /* Maximum number of composite transactions that will be considered*/
-%let keep6 = "Acct_Num External_ABA External_Acct dc_amt date_of_loss ach_sum";
 
 %macro Composite(name, target, accts, df, op);
 %local myvariable i comb calc_loss size vars;
+
 %do i=1 %to %sysfunc(countw(&accts));
-    %let myvariable =%scan (&accts, &i);
-    %let calc_loss = %scan(&target,&i);
-    %let size = %scan(&n,&i);
-    %let vars = %sysfunc(compress(&keep6.,'"'));
+%let myvariable =%scan (&accts, &i);
+%let calc_loss = %scan(&target,&i);
+%let size = %scan(&n,&i);
+%let vars = %sysfunc(compress(&keep6.,'"'));
+
 data &myvariable;
 array ach00 (1000) 8 _temporary_;
+
 do _N_= 1 to &size.;
 set &df. (keep = &vars);
 where acct_num = substr("&myvariable", 4, length("&myvariable")-3);
 ach00(_N_) = dc_amt;
 end;
+
 array ach 8 ach1 - &max.;
 %if &size. &op. 20 and &calc_loss. ne %then %do comb = 1 %to &size.; /* Large sizes (>cbmax) must be run separately from smaller sizes or else SAS will take forever*/
 call missing(of ach1 - ach&comb.);
-ncomb = comb(&size., &comb.);
+ncomb = comb(&size., &comb.); /*number of possible combinations of transactions for account*/
 do i = 1 to ncomb;
 rc = lexcombi(&size., &comb., of ach1 - ach&comb.);
 sum= 0;
@@ -137,9 +142,78 @@ delete PF_:;
 run;
 %mend Composite;
 
+%let range = .1; /*Specifies what percentage range of calc_loss composite ACHS can be within to be considered part of fraud event */
+%let cbmax = 20; /* Maximum number of composite transactions that will be considered*/
+%let keep6 = "Acct_Num External_ABA External_Acct dc_amt date_of_loss ach_sum";
+
 %Composite(grs_ach, &gross, &PF_list, ach_co,le);
 %Composite(net_ach, &netam, &PF_list, ach_co,le);
 
 /*Accounts where &size > &cbmax are run separately*/
 %Composite(grs_ach, &gross, &PF_List, ach_co, gt);
 %Composite (net_ach, &netam, &PF_List, ach_co, gt);
+
+﻿
+data fraud_ACH_;
+set net_ach: grs_ach:;
+if not missing(dif);
+run;
+
+proc sort data-fraud_ACH_;
+by Acct_Num dif target rc;
+run;
+
+data fraud_ACH;
+set fraud_ACH_;
+by acct_num dif target rc;
+retain num dif_cl;
+if first.Acct_Num and first.dif then num =
+else num =
+sum(num, 1);
+num =1;
+dif_cl = dif / cl;
+format dif_c1 percent14.2;
+run;
+
+ods select nlevels;
+proc freq data-fraud ACH nlevels;
+ods output nlevels-nlevels_my_data;
+run;
+
+proc sql;
+select TableVar into : empty_columns separated by ","
+from nlevels_my_data
+where nnonmisslevels = 0
+or TableVar in ('ach_amt' 'num' 'i' 'ncomb');
+
+select max(input(substr(tablevar, 4), comma3.)) into : limit
+from nlevels_my_data
+where NNonMissLevels <> 0
+and substr(tablevar,1,3) = "ach";
+
+alter table fraud_ACH
+drop &empty_columns.;
+
+data null;
+do tx = 1 to &limit.;
+num = "or num";
+equals = "=";
+ach = "ach";
+join = cat(num, equals, ach, tx);
+output;
+end;
+run;
+
+proc sql;
+select case when monotonic() = 1 then substr(join,3,length(join)-2) else join end into : join_list separated by " "
+from null;
+
+proc sql;
+create table itemized_list as
+select a.Acct_Num, a. External_ABA, a. External_Acct, a.ach_date, a.ach_amt,a.date_dif, a.FI, a.trans_code, a. sequence, a.item_amt, a.date_of_loss, a.Party,a.loss_to_PFCU, a.Origin_Type, a.Channel_Out_Type ,CO_Date, a.num, a.ach_count,b.sum, b.cl,b.dif as b_dif,b.dif_cl 60 from ach_co a
+inner join fraud_ach b
+on a.acct_num = b.acct_num and (&join_list.)
+order by a.Acct_Num;
+
+
+
