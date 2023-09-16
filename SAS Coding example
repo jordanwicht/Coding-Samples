@@ -200,7 +200,7 @@ ods output KS2Stats = KS2Stats_&group.;
 proc sql noprint;
 select valueatmaximum into : ks_max from kstest_&group. where class = "Total";
 select left(catx(" ","D:",put(nvalue2,percent8.2))) into : D from KS2Stats_&group. where label2 = "D";
-select left(catx(" ","&D."lo,"(p",cvalue2,")")) into : Dp from KS2Stats_&group. where name2 = "P_KSA";
+select left(catx(" ","&D. (p",cvalue2,")")) into : Dp from KS2Stats_&group. where name2 = "P_KSA";
 
 proc sql;
 create table edf_input_&group. as
