@@ -1,7 +1,7 @@
 /*Background
-There is a list of accounts with negative balances. However, the transactions that comprise those balances are not known.
-There also exists a dataset with all transactions for every account. For this project, I create a program to match the composite transactions 
-that make up the total negative balance for a given account. Some additional details:
+There is a list of accounts with negative balances. However, the transactions that comprise those balances are not known. Therefore, we must
+match the list of negative balances with their corresponding transactions from another dataset. For this project, I create a program to match
+the composite transactions that make up the total negative balance for a given account. Some additional details:
 
 -There are two datasets: 
     1. An account-level dataset (acct_bal) with the outstanding balance for that account, and
@@ -13,8 +13,9 @@ that make up the total negative balance for a given account. Some additional det
 made when calculating the outstanding balance (the data may have been manually entered), etc.
 -Outstanding balances could be the result of events made of debits or credits, i.e. both directions must be considered, although a balance
 comprised of both is unlikely
--Every balance has a corresponding event date, i.e. the date the outstanding balance realized. However, the composite transactions do not necessarily 
-occur on the same date.
+-Every balance has a corresponding event date, i.e. the date the outstanding balance was realized. However, the composite transactions do not
+necessarily (and often do not) occur on the same date.
+
 
 The following code joins the datasets together, then finds all possible combinations of transactions for each account and produces the combination that is
 most likely to be the true set if composite transactions based on ranking criteria
@@ -27,31 +28,36 @@ most likely to be the true set if composite transactions based on ranking criter
 /*To limit the number of transactions to consider, only those within 45 days of the recorded event date will be kept*/
 %let days = 45;
 
+/*Join the two tables on account ID and date range*/
 proc sql;
-create table xcs as select
-a.ACCT_ID, TRX_date, sign, TRX_amt, TRX_amt * sign as dc_amt, abs(TRX_date - date_of_loss) as date_dif
-,trans_code, sequence ,date_of_loss, Party, origin_type, channel_out_type, co_date, loss_to_JWID
-,case when item_amt = . then 0 else item_amt end as item_amt format dollar16.2
-from chargeoffs a
-inner join TRX b
-on a.ACCT_ID = b.ACCT_ID and abs(intck('day',TRX_date, date_of_loss)) <= &days.
-order by ACCT_ID, TRX_amt;
+create table BAL_TRX as select
+a.ACCT_ID, b.TRX_date, b.sign, TRX_amt, b.TRX_amt * b.sign as dc_amt, abs(b.TRX_date - a.date_of_loss) as date_dif 
+,b.TRX_ID ,a.date_of_loss, co_date, a.balance
+from acct_BAL a
+inner join acct_TRX b
+on a.ACCT_ID = b.ACCT_ID and abs(intck('day',b.TRX_date, a.date_of_loss)) <= &days.
+order by a.ACCT_ID, b.TRX_amt;
 run;
 
+/*Calculate two additional fields:
+    trx_count = number of transactions for each account
+    tx_sum    = the total amount of those transactions for each account*/
 proc sql;
 create table TRX_co_ as
 select a.*, b.TRX_count, c.TRX_sum
-from xcs a
+from BAL_TRX a
 left join
-(select count(*) as TRX_count, ACCT_ID from xcs
+(select count(*) as TRX_count, ACCT_ID from BAL_TRX
 group by ACCT_ID) b
 on a.ACCT_ID = b.ACCT_ID
 left join
-(select sum(TRX_amt) as TRX_sum, ACCT_ID from xcs
+(select sum(TRX_amt) as TRX_sum, ACCT_ID from BAL_TRX
 group by ACCT_ID) c
 on a.ACCT_ID= c.ACCT_ID
 order by ACCT_ID, TRX_amt;
 
+/*Calculate a stratified row number by account ID. This will be used to join the output dataset later.
+  Amount is chosen in ascending order (ather than trx_id, for example) because it should improve the run time of the macro below*/
 data TRX_co;
 set TRX_co_;
 by ACCT_ID TRX_amt;
@@ -61,8 +67,8 @@ else num = sum(num, 1);
 run;
 
 /*For n number of composite transactions, there are 2^n - 1 possible combinations. Therefore, for larger
-  values of n (e.g., > 20, or > 1,048,575 combinations), we need to limit the search space so SAS doesn't take forever.
-  Additionally, I run the list of accounts that have larger potential transactions separately for better computational performance.*/
+  values of n (e.g., values > 20, or > 1,048,575 combinations), we need to limit the search space so our machine doesn't take forever.
+  Additionally, I run the list of accounts that have larger potential transactions (trx_count) separately for better computational performance.*/
 
 /*List of accounts in descending order of number of candidate transactions*/
 proc sql;
@@ -73,14 +79,14 @@ group by ACCT_ID
 order by calculated count desc;
 
   /******************************************************************************************************************************/
- /*Step 2: Store list of accounts, outstanding balances, and total amount and number of candidate transactions for eTRX account*/
+ /*Step 2: Store list of accounts, outstanding balances, and total amount and number of candidate transactions for each account*/
 /******************************************************************************************************************************/
 
 proc sql noprint;
-select round(max(item_amt),1), round (max(loss_to_JWID),1) into : gross separated by " ", :netam separated by " "
+select round(max(balance),1) into : target_list separated by " "
 from TRX_co;
 
-select cat("PF_", ACCT_ID) into : PF_list separated by " "
+select cat("JW_", ACCT_ID) into : JE_list separated by " "
 from (select distinct ACCT_ID from TRX_co);
 
 select count(*) into : n separated by " "
@@ -99,7 +105,7 @@ order by calculated sort desc;
 %let myvariable =%scan (&accts, &i);
 %let calc_loss = %scan(&target,&i);
 %let size = %scan(&n,&i);
-%let vars = %sysfunc(compress(&keep6.,'"'));
+%let vars = %sysfunc(compress(&keep_list.,'"'));
 
 data &myvariable;
 array TRX00 (1000) 8 _temporary_;
@@ -122,8 +128,6 @@ sum + TRX00 (TRX(_N_));
 cl = &calc_loss.;
 absum = abs(sum);
 dif= abs(cl - absum);
-if substr("&name.",1,3) = "grs" then rank = 0; 
-else if substr("&name.",1,3) = "net" then rank = 1;
 end;
 
 /*Criteria to be considered a potential matching combination to outstanding balance or for abandoning early*/
@@ -139,36 +143,34 @@ end;
 
 /*Concatenate all files created in the do loop*/
 data &name._&op.;
-set PF_;;
+set JW_;;
 
 /*Delete excess files that were concatenated*/
 proc datasets library=work nolist;
-delete PF_:;
+delete JW_:;
 run;
 %mend Composite;
 
 %let range = .1; /*Specifies what percentage range of calc_loss composite transactions can be within to be considered part of fraud event */
 %let cbmax = 20; /* Maximum number of composite transactions that will be considered*/
-%let keep6 = "ACCT_ID dc_amt date_of_loss TRX_sum";
-
-%Composite(grs_TRX, &gross, &PF_list, TRX_co,le);
-%Composite(net_TRX, &netam, &PF_list, TRX_co,le);
+%let keep_list = "ACCT_ID dc_amt date_of_loss TRX_sum";
 
 /*Accounts where &size > &cbmax are run separately*/
-%Composite(grs_TRX, &gross, &PF_List, TRX_co, gt);
-%Composite (net_TRX, &netam, &PF_List, TRX_co, gt);
+%Composite(net_TRX, &target_list, &JW_list, TRX_co,le);
+%Composite (net_TRX, &target_list, &JW_List, TRX_co, gt);
 
-data fraud_TRX_;
+
+data matched_trx_;
 set net_TRX: grs_TRX:;
 if not missing(dif);
 run;
 
-proc sort data-fraud_TRX_;
-by ACCT_ID dif target rc;
+proc sort data=matched_trx_;
+by ACCT_ID dif rc;
 run;
 
-data fraud_TRX;
-set fraud_TRX_;
+data matched_trx;
+set matched_trx_;
 by ACCT_ID dif target rc;
 retain num dif_cl;
 if first.ACCT_ID and first.dif then num =
@@ -195,7 +197,7 @@ from nlevels_my_data
 where NNonMissLevels <> 0
 and substr(tablevar,1,3) = "TRX";
 
-alter table fraud_TRX
+alter table matched_trx
 drop &empty_columns.;
 
 data null;
@@ -214,8 +216,8 @@ from null;
 
 proc sql;
 create table itemized_list as
-select a.ACCT_ID, a.TRX_date, a.TRX_amt,a.date_dif, a.trans_code, a. sequence, a.item_amt, a.date_of_loss, a.Party,a.loss_to_JWID, a.Origin_Type, a.Channel_Out_Type ,CO_Date, a.num, a.TRX_count,b.sum, b.cl,b.dif as b_dif,b.dif_cl 60 from TRX_co a
-inner join fraud_TRX b
+select a.ACCT_ID, a.TRX_date, a.TRX_amt,a.date_dif, a. TRX_ID, a.balance, a.date_of_loss, ,a.loss_to_JWID, a.Origin_Type, a.Channel_Out_Type ,CO_Date, a.num, a.TRX_count,b.sum, b.cl,b.dif as b_dif,b.dif_cl 60 from TRX_co a
+inner join matched_trx b
 on a.ACCT_ID = b.ACCT_ID and (&join_list.)
 order by a.ACCT_ID;
 
