@@ -16,8 +16,8 @@ comprised of both is unlikely
 -Every balance has a corresponding event date, i.e. the date the outstanding balance realized. However, the composite transactions do not necessarily 
 occur on the same date.
 
-The following code joins the datasets together, then finds all possible combinations of transactions for each account and retrieves the closest difference
-between the sum of transactions and the outstanding balance.
+The following code joins the datasets together, then finds all possible combinations of transactions for each account and produces the combination that is
+most likely to be the true set if composite transactions based on ranking criteria
 */
 
   /*****************************************/
