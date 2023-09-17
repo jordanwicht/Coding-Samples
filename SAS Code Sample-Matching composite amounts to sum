@@ -98,6 +98,10 @@ from TRX_co
 group by ACCT_ID
 order by calculated sort desc;
 
+  /***********************************************************************/
+ /*Step 3: Create macro that matches transaction to outstanding balances*/
+/***********************************************************************/
+
 %macro Composite(name, target, accts, df, op);
 %local myvariable i comb calc_loss size vars;
 
