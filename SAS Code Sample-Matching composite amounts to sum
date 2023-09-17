@@ -102,11 +102,19 @@ order by calculated sort desc;
  /*Step 3: Create macro that matches transaction to outstanding balances*/
 /***********************************************************************/
 
+/*
+name=desired name of output dataset
+target=name of string containing outstanding balances
+accts= name of string containing accounts
+df= name of input dataset
+op=gt or le to trx_count
+*/
+
 %macro Composite(name, target, accts, df, op);
 %local myvariable i comb calc_loss size vars;
 
 %do i=1 %to %sysfunc(countw(&accts));
-%let myvariable =%scan (&accts, &i);
+%let myvariable =%scan(&accts, &i);
 %let calc_loss = %scan(&target,&i);
 %let size = %scan(&n,&i);
 %let vars = %sysfunc(compress(&keep_list.,'"'));
@@ -160,15 +168,21 @@ run;
 %let keep_list = "ACCT_ID dc_amt date_of_loss TRX_sum";
 
 /*Accounts where &size > &cbmax are run separately*/
-%Composite(net_TRX, &target_list, &JW_list, TRX_co,le);
-%Composite (net_TRX, &target_list, &JW_List, TRX_co, gt);
+%Composite(trx_sets, &target_list, &JW_list, TRX_co,le);
+%Composite(trx_sets, &target_list, &JW_List, TRX_co, gt);
 
+  /************************************************************************/
+ /*Step 4: Join the resulting datasets with the original combined dataset*/
+/************************************************************************/
 
+/*Combine gt and le datasets*/
 data matched_trx_;
-set net_TRX: grs_TRX:;
+set trx_sets:;
 if not missing(dif);
 run;
 
+/*Accounts will likely have more than one group of possible combinations, so we prioritize by the difference between the target and the 
+  sum of the transactions, then by cominations made up of fewer transactions*/
 proc sort data=matched_trx_;
 by ACCT_ID dif rc;
 run;
@@ -177,17 +191,17 @@ data matched_trx;
 set matched_trx_;
 by ACCT_ID dif target rc;
 retain num dif_cl;
-if first.ACCT_ID and first.dif then num =
-else num =
-sum(num, 1);
-num =1;
+if first.ACCT_ID and first.dif then num = 1;
+else num = sum(num, 1);
+if num =1;
 dif_cl = dif / cl;
 format dif_c1 percent14.2;
 run;
 
+/*Remove columns with missing data*/
 ods select nlevels;
-proc freq data-fraud TRX nlevels;
-ods output nlevels-nlevels_my_data;
+proc freq data=matched_trx nlevels;
+ods output nlevels=nlevels_my_data;
 run;
 
 proc sql;
@@ -204,6 +218,7 @@ and substr(tablevar,1,3) = "TRX";
 alter table matched_trx
 drop &empty_columns.;
 
+/*create mutable join key*/
 data null;
 do tx = 1 to &limit.;
 num = "or num";
@@ -218,6 +233,7 @@ proc sql;
 select case when monotonic() = 1 then substr(join,3,length(join)-2) else join end into : join_list separated by " "
 from null;
 
+/*create final dataset*/ 
 proc sql;
 create table itemized_list as
 select a.ACCT_ID, a.TRX_date, a.TRX_amt,a.date_dif, a. TRX_ID, a.balance, a.date_of_loss, ,a.loss_to_JWID, a.Origin_Type, a.Channel_Out_Type ,CO_Date, a.num, a.TRX_count,b.sum, b.cl,b.dif as b_dif,b.dif_cl 60 from TRX_co a
